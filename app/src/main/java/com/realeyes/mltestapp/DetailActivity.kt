@@ -2,8 +2,11 @@ package com.realeyes.mltestapp
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.os.Environment
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
@@ -23,13 +26,22 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.Transformations
 import com.google.android.gms.tasks.Task
+import com.google.mlkit.common.model.LocalModel
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.label.ImageLabeling
+import com.google.mlkit.vision.label.custom.CustomImageLabelerOptions
+import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
+import com.google.mlkit.vision.objects.ObjectDetection
+import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.googlecode.tesseract.android.TessBaseAPI
 import com.realeyes.mltestapp.ui.theme.MltestappTheme
 import com.realeyes.mltestapp.ui.theme.Typography
 import java.io.File
 import java.nio.ByteBuffer
+import kotlin.concurrent.thread
+
 
 class DetailActivity : ComponentActivity() {
 
@@ -76,6 +88,10 @@ class DetailActivity : ComponentActivity() {
                 }
             ),
             Method(
+                "OCR Tesseract",
+                tess(decoded)
+            ),
+            Method(
                 "Labeling (default)",
                 defaultLabeling(inputImage)
             ),
@@ -115,54 +131,94 @@ class DetailActivity : ComponentActivity() {
         }
     }
 
+    private fun Context.copyModelToRealFile(modelName: String): File {
+        val targetFolder = File(noBackupFilesDir, "tessdata")
+        targetFolder.mkdir()
+        val target = File(targetFolder, modelName)
+
+        if (!target.exists()) {
+            val modelAsset = assets.open(modelName)
+            modelAsset.use { input ->
+                target.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+
+        return noBackupFilesDir
+    }
+
+    private fun tess(inputImage: Bitmap): LiveData<String> {
+        val res = MutableLiveData<String>()
+        thread {
+            // Create Tesseract instance
+            val tess = TessBaseAPI()
+
+            val dataPath = copyModelToRealFile("eng.traineddata").absolutePath
+
+            // Initialize API for specified language (can be called multiple times during Tesseract lifetime)
+            if (!tess.init(dataPath, "eng")) {
+                //
+                tess.recycle()
+                Log.e("DRWX", "tess: Error initializing Tesseract (wrong data path or language) " )
+            }
+
+            // Specify image and then recognize it and get result (can be called multiple times during Tesseract lifetime)
+            tess.setImage(inputImage)
+            val text = tess.utF8Text
+
+            // Release Tesseract when you don't want to use it anymore
+            tess.recycle()
+            res.postValue(text)
+        }
+        return res
+    }
+
     private fun defaultLabeling(inputImage: InputImage): LiveData<String> {
-//        return ImageLabeling.getClient(ImageLabelerOptions.DEFAULT_OPTIONS)
-//            .process(inputImage)
-//            .toLiveData()
-//            .let {
-//                Transformations.map(it) {
-//                    it.map { "${it.text} ${it.confidence}%" }.joinToString("\n")
-//                }
-//            }
-        return MutableLiveData("nope")
+        return ImageLabeling.getClient(ImageLabelerOptions.DEFAULT_OPTIONS)
+            .process(inputImage)
+            .toLiveData()
+            .let {
+                Transformations.map(it) {
+                    it.map { "${it.text} ${it.confidence}%" }.joinToString("\n")
+                }
+            }
     }
 
     private fun msanet13224(inputImage: InputImage): LiveData<String> {
-//        val localModel = LocalModel.Builder()
-//            .setAssetFilePath("mnasnet_1.3_224_1_metadata_1.tflite")
-//            .build()
-//        val customImageLabelerOptions = CustomImageLabelerOptions.Builder(localModel)
-//            .setConfidenceThreshold(0.5f)
-//            .setMaxResultCount(5)
-//            .build()
-//        val labeler = ImageLabeling.getClient(customImageLabelerOptions)
-//        return labeler.process(inputImage)
-//            .toLiveData()
-//            .let {
-//                Transformations.map(it) {
-//                    it.map { "${it.text} ${it.confidence}%" }.joinToString("\n")
-//                }
-//            }
-        return MutableLiveData("nope")
+        val localModel = LocalModel.Builder()
+            .setAssetFilePath("mnasnet_1.3_224_1_metadata_1.tflite")
+            .build()
+        val customImageLabelerOptions = CustomImageLabelerOptions.Builder(localModel)
+            .setConfidenceThreshold(0.5f)
+            .setMaxResultCount(5)
+            .build()
+        val labeler = ImageLabeling.getClient(customImageLabelerOptions)
+        return labeler.process(inputImage)
+            .toLiveData()
+            .let {
+                Transformations.map(it) {
+                    it.map { "${it.text} ${it.confidence}%" }.joinToString("\n")
+                }
+            }
     }
 
     private fun objDet(inputImage: InputImage): LiveData<String> {
-//        val options = ObjectDetectorOptions.Builder()
-//            .setDetectorMode(ObjectDetectorOptions.SINGLE_IMAGE_MODE)
-//            .enableMultipleObjects()
-//            .enableClassification()
-//            .build()
-//        return ObjectDetection.getClient(options)
-//            .process(inputImage)
-//            .toLiveData()
-//            .let {
-//                Transformations.map(it) {
-//                    it.mapIndexed { i, o ->
-//                        "Object ${i}: " + o.labels.map { "${it.text} ${it.confidence}%" }.joinToString("\n")
-//                    }.joinToString("\n")
-//                }
-//            }
-        return MutableLiveData("nope")
+        val options = ObjectDetectorOptions.Builder()
+            .setDetectorMode(ObjectDetectorOptions.SINGLE_IMAGE_MODE)
+            .enableMultipleObjects()
+            .enableClassification()
+            .build()
+        return ObjectDetection.getClient(options)
+            .process(inputImage)
+            .toLiveData()
+            .let {
+                Transformations.map(it) {
+                    it.mapIndexed { i, o ->
+                        "Object ${i}: " + o.labels.map { "${it.text} ${it.confidence}%" }.joinToString("\n")
+                    }.joinToString("\n")
+                }
+            }
     }
 }
 
